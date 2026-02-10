@@ -58,9 +58,6 @@ void Parse_USB_Packet(const USBCtrlPacket* pkt) {
     switch (pkt->command_id) {
 
         case CMD_DRIVE_ALL:
-            // 駆動モード(STATE_DRIVE)でない時にモーター値を更新しても良いか？
-            // -> 安全のため、更新自体はOKだが、app.cpp側で出力がカットされる設計なので
-            //    ここでは単純に代入するだけでOKです。
             for (int i = 0; i < 16; i++) {
                 if (pkt->payload.drive[i].mode != 3) {
                     motors[i].mode   = pkt->payload.drive[i].mode;
@@ -70,35 +67,41 @@ void Parse_USB_Packet(const USBCtrlPacket* pkt) {
             break;
 
         case CMD_SET_PID:
-            {
-                uint8_t id = pkt->payload.pid.motor_id;
-                if (id < 16) {
-                    motors[id].vel_pid.kp           = pkt->payload.pid.speed_kp;
-                    motors[id].vel_pid.ki           = pkt->payload.pid.speed_ki;
-                    motors[id].vel_pid.kd           = pkt->payload.pid.speed_kd;
-                    motors[id].vel_pid.i_limit      = pkt->payload.pid.speed_i_limit;
-                    motors[id].vel_pid.output_limit = pkt->payload.pid.speed_output_limit;
+				{
+					// PCは 1〜16 のIDを送ってくる
+					uint8_t id_raw = pkt->payload.pid.motor_id;
 
-                    motors[id].pos_pid.kp           = pkt->payload.pid.position_kp;
-                    motors[id].pos_pid.ki           = pkt->payload.pid.position_ki;
-                    motors[id].pos_pid.kd           = pkt->payload.pid.position_kd;
-                    motors[id].pos_pid.i_limit      = pkt->payload.pid.position_i_limit;
-                    motors[id].pos_pid.output_limit = pkt->payload.pid.position_output_limit;
+					// 配列のインデックス(0〜15)に変換
+					int idx = id_raw - 1;
 
-                    motors[id].vel_pid.reset();
-                    motors[id].pos_pid.reset();
-                }
-            }
-            break;
+					// 範囲チェック (0〜15)
+					if (idx >= 0 && idx < 16) {
+						// パラメータ適用
+						motors[idx].vel_pid.kp           = pkt->payload.pid.speed_kp;
+						motors[idx].vel_pid.ki           = pkt->payload.pid.speed_ki;
+						motors[idx].vel_pid.kd           = pkt->payload.pid.speed_kd;
+						motors[idx].vel_pid.i_limit      = pkt->payload.pid.speed_i_limit;
+						motors[idx].vel_pid.output_limit = pkt->payload.pid.speed_output_limit;
+
+						motors[idx].pos_pid.kp           = pkt->payload.pid.position_kp;
+						motors[idx].pos_pid.ki           = pkt->payload.pid.position_ki;
+						motors[idx].pos_pid.kd           = pkt->payload.pid.position_kd;
+						motors[idx].pos_pid.i_limit      = pkt->payload.pid.position_i_limit;
+						motors[idx].pos_pid.output_limit = pkt->payload.pid.position_output_limit;
+
+						motors[idx].vel_pid.reset();
+						motors[idx].pos_pid.reset();
+
+						// ★★★★★ ここを追加してください！ ★★★★★
+						// これがないとマスクが永遠に0のままです
+						pid_configured_mask |= (1 << idx);
+					}
+				}
+				break;
 
         case CMD_SEND_CAN:
             {
-                // main.h や can_handler.hpp で宣言されている hfdcan3 を使う
-                // （もし見えなければ extern FDCAN_HandleTypeDef hfdcan3; を追加）
                 extern FDCAN_HandleTypeDef hfdcan3;
-
-                // 新しく作った関数を呼ぶだけ！
-                // HALの複雑な設定は全部向こうでやってくれます
                 CAN_Transmit_Safe(
                     &hfdcan3,
                     pkt->payload.can_tx.can_id,
@@ -109,12 +112,18 @@ void Parse_USB_Packet(const USBCtrlPacket* pkt) {
             break;
 
         case CMD_EMERGENCY_STOP:
-            // ここでの処理も重要ですが、app.cpp側で `is_pc_emergency_req` フラグを
-            // 立てて制御しているので、ここでは念のためのパラメータリセットを行います
             for (int i = 0; i < 16; i++) {
                 motors[i].mode = 3;
                 motors[i].target = 0;
             }
+            // PCからの停止要求フラグを立てる処理が必要ならここに追加
+            // extern bool is_pc_emergency_req;
+            // is_pc_emergency_req = true;
+            break;
+
+        case CMD_RESET_EMERGENCY: // これも忘れずに！
+            // extern bool is_pc_emergency_req;
+            // is_pc_emergency_req = false;
             break;
     }
 }
@@ -137,7 +146,7 @@ void Prepare_Motor_Packet(USBFeedbackPacket* pkt) {
     for (int i = 0; i < 16; i++) {
         pkt->motors[i].angle    = motors[i].total_angle;
         pkt->motors[i].velocity = motors[i].current_velocity;
-        pkt->motors[i].torque   = motors[i].torque_current_raw;
+        pkt->motors[i].torque = motors[i].current_torque;
         pkt->motors[i].temp     = motors[i].temperature;
     }
 

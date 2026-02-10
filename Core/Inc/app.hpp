@@ -14,6 +14,8 @@ typedef enum {
     STATE_DRIVE     = 2  // 駆動モード
 } SystemState;
 
+void Send_All_Motor_Zero();
+
 // どちらもmain.cに置かれている
 void App_Init(); // 初期化関数
 void App_Loop(); // ループ関数

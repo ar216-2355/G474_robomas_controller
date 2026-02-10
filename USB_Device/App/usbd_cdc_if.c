@@ -99,6 +99,10 @@ uint8_t UserTxBufferFS[APP_TX_DATA_SIZE];
 /* USER CODE BEGIN PRIVATE_VARIABLES */
 volatile uint8_t RxBuffer[sizeof(USBCtrlPacket)];
 volatile uint8_t is_data_received = 0;
+
+// 【追加】分割データを結合するための一時バッファとカウンタ
+uint8_t RxPacketBuffer[sizeof(USBCtrlPacket)]; // 結合用バッファ
+uint32_t RxPacketLen = 0;                      // 現在溜まっているサイズ
 /* USER CODE END PRIVATE_VARIABLES */
 
 /**
@@ -265,18 +269,32 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+	uint32_t len = *Len;
 
-	// データ長がパケットサイズと一致するか確認
-	  if (*Len == sizeof(USBCtrlPacket)) {
-		  if (is_new_data_ready == 0) {
-			memcpy(&USB_Next_Data, Buf, sizeof(USBCtrlPacket));
-			is_new_data_ready = 1; // 準備完了フラグを立てる
-	      }
+	  // 1. バッファ溢れ防止（もし変なサイズが来たらリセット）
+	  if (RxPacketLen + len > sizeof(USBCtrlPacket)) {
+	      RxPacketLen = 0;
 	  }
 
-  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
-  USBD_CDC_ReceivePacket(&hUsbDeviceFS);
-  return (USBD_OK);
+	  // 2. 受信データを結合用バッファの後ろに追記する
+	  //    (64バイト + 21バイト = 85バイト に復元する作業)
+	  memcpy(&RxPacketBuffer[RxPacketLen], Buf, len);
+	  RxPacketLen += len;
+
+	  // 3. 必要なサイズ（85バイト）溜まったら、メイン処理に渡す
+	  if (RxPacketLen == sizeof(USBCtrlPacket)) {
+	      if (is_new_data_ready == 0) {
+	          memcpy(&USB_Next_Data, RxPacketBuffer, sizeof(USBCtrlPacket));
+	          is_new_data_ready = 1; // 準備完了！
+	      }
+	      // 次のためにリセット
+	      RxPacketLen = 0;
+	  }
+
+	  // 次のデータ受信を開始
+	  USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
+	  USBD_CDC_ReceivePacket(&hUsbDeviceFS);
+	  return (USBD_OK);
   /* USER CODE END 6 */
 }
 

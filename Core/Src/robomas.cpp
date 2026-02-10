@@ -1,52 +1,71 @@
 #include "robomas.hpp"
-#include <cmath> // std::abs用
-#include <algorithm> // std::max, std::min 用
+#include <cmath>
+#include <algorithm>
 #include "main.h"
 
-// 定数: エンコーダ分解能 (0~8191)
+// 定数
 static const float ENCODER_RESOLUTION = 8192.0f;
 static const float DEG_PER_COUNT = 360.0f / ENCODER_RESOLUTION;
 
-void RoboMaster::updateFeedback(const uint8_t* can_data) {
-    // 1. CANデータから生値を復元 (ビッグエンディアン)
-    // Data[0]: Angle High, Data[1]: Angle Low
-    uint16_t new_angle_raw = (can_data[0] << 8) | can_data[1];
-    // Data[2]: Speed High, Data[3]: Speed Low
-    int16_t new_speed_raw  = (can_data[2] << 8) | can_data[3];
-    // Data[4]: Torque High, Data[5]: Torque Low
-    int16_t new_torque_raw = (can_data[4] << 8) | can_data[5];
-    // Data[6]: Temp
-    uint8_t new_temp = can_data[6];
+// initの実装
+void RoboMaster::init(uint8_t _id) {
+    this->id = _id;
+}
 
+// setPIDの実装 (★ここを修正: 変数名をPID.hppに合わせる)
+void RoboMaster::setPID(const PIDConfig& cfg) {
+    // 速度制御PID
+    vel_pid.kp = cfg.speed_kp;
+    vel_pid.ki = cfg.speed_ki;
+    vel_pid.kd = cfg.speed_kd;
+
+    // ★修正: limit_i -> i_limit (もしエラーが出るならPID.hppを確認して変数名を合わせてください)
+    vel_pid.i_limit = cfg.speed_i_limit;
+
+    // ★修正: limit_output -> output_limit
+    vel_pid.output_limit = cfg.speed_output_limit;
+
+    // 位置制御PID
+    pos_pid.kp = cfg.position_kp;
+    pos_pid.ki = cfg.position_ki;
+    pos_pid.kd = cfg.position_kd;
+
+    // ★修正
+    pos_pid.i_limit = cfg.position_i_limit;
+    pos_pid.output_limit = cfg.position_output_limit;
+
+    // 設定変更時はリセット推奨
+    vel_pid.reset();
+    pos_pid.reset();
+}
+
+void RoboMaster::updateFeedback(const uint8_t* can_data) {
+    // 1. CANデータから生値を復元
+    uint16_t new_angle_raw = (can_data[0] << 8) | can_data[1];
+    int16_t new_speed_raw  = (can_data[2] << 8) | can_data[3];
+    int16_t new_torque_raw = (can_data[4] << 8) | can_data[5];
+    uint8_t new_temp = can_data[6];
 
     // 2. 状態変数の更新
     angle_raw = new_angle_raw;
-    current_velocity = (float)new_speed_raw; // 必要ならギア比で割る
-    torque_current_raw = new_torque_raw;
+    current_velocity = (float)new_speed_raw;
+    current_torque = new_torque_raw; // 名前修正済み
     temperature = new_temp;
 
-
-    // 3. ★累積角度の計算処理 (ここが核心) ★
+    // 3. 累積角度の計算処理
     if (is_first_update) {
-        // 初回は「前回値」がないので、現在の値を基準にする
         last_angle_raw = angle_raw;
-        total_angle = angle_raw * DEG_PER_COUNT; // 初期角度をセット(または0にする)
+        total_angle = angle_raw * DEG_PER_COUNT;
         is_first_update = false;
         return;
     }
 
-    // 差分を計算
     int diff = (int)angle_raw - (int)last_angle_raw;
-
 	if (diff > 4096) diff -= 8192;
 	else if (diff < -4096) diff += 8192;
 
-    // 累積角度に加算 (度数法)
     total_angle += (float)diff * DEG_PER_COUNT;
-
-    // 今回の値を「前回値」として保存
     last_angle_raw = angle_raw;
-
     last_feedback_time = HAL_GetTick();
 }
 
@@ -62,6 +81,7 @@ int16_t RoboMaster::calculate() {
         final_current = vel_pid.compute(target, current_velocity);
     }
     else if (mode == 0) {
+        // ★修正: limit_output -> output_limit
     	final_current = std::max(-vel_pid.output_limit, std::min(target, vel_pid.output_limit));
     }
     return (int16_t)final_current;
