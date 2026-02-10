@@ -14,4 +14,6 @@ void CAN1_LED(void);
 void CAN2_LED(void);
 void CAN3_LED(void);
 
+void Update_Mode_LEDs();
+
 }

@@ -268,12 +268,9 @@ static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 
 	// データ長がパケットサイズと一致するか確認
 	  if (*Len == sizeof(USBCtrlPacket)) {
-	      // 処理中でなければバッファにコピー
-	      if (is_new_data_ready == 0) {
-	          // memcpyを使うので #include <string.h> が必要かもしれません
-	          // もしエラーが出るなら手動コピーまたは上部にinclude追加
-	          memcpy(&USB_Next_Data, Buf, sizeof(USBCtrlPacket));
-	          is_new_data_ready = 1; // フラグを立てる
+		  if (is_new_data_ready == 0) {
+			memcpy(&USB_Next_Data, Buf, sizeof(USBCtrlPacket));
+			is_new_data_ready = 1; // 準備完了フラグを立てる
 	      }
 	  }
 

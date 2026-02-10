@@ -5,7 +5,6 @@
 #pragma once
 
 #include <stdint.h>
-#include <vector>
 
 // テンプレートクラス: Tは保存する型、Sizeはバッファサイズ
 template <typename T, uint32_t Size>

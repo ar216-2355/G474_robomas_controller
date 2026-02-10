@@ -15,5 +15,5 @@ extern RingBuffer<CanFrame, 64> can3_rx_buffer;
 
 // 関数宣言
 void CAN_Init();
-void CAN3_Transmit_Raw(uint32_t id, uint8_t* data, uint8_t dlc);
 void Send_All_Motor_Commands(); // 定期的に呼ぶ
+void CAN_Transmit_Safe(FDCAN_HandleTypeDef *hfdcan, uint32_t id, uint8_t* data, uint8_t len);

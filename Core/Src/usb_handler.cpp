@@ -1,12 +1,32 @@
 #include "usb_handler.hpp"
+#include "app.hpp"         // ★重要: enum SystemState の定義を知るために必要
 #include "robomas.hpp"
+#include "can_handler.hpp"
 #include "my_LED.hpp"
-#include <cstring> // ← ★これを追加してください（memset用）
+#include <cstring>         // memset用
 
-// main.cpp などで実体定義されている motors を参照する
-extern RoboMaster motors[16];
+// =========================================================
+// 1. 変数の実体定義 (Memory Allocation)
+// =========================================================
+// app.cpp で "extern" されている変数の「実体」をここに作ります。
+// これがないとリンクエラーになります。
+extern "C" {
+    extern USBCtrlPacket USB_Next_Data;
+    extern volatile uint8_t is_new_data_ready;
+}
 
-// ヘルパー関数
+// =========================================================
+// 2. 外部変数の参照 (External References)
+// =========================================================
+// 他のファイルにある変数を使いに行きます。
+extern RoboMaster motors[16];           // main.cpp (or app.cpp)
+extern SystemState CurrentSystemState;  // ★app.cpp で計算された現在の状態
+extern uint16_t pid_configured_mask; // app.cppの変数を参照
+
+// =========================================================
+// 3. 内部ヘルパー関数
+// =========================================================
+
 static bool VerifyChecksum(const USBCtrlPacket* packet) {
     uint16_t sum = 0;
     const uint8_t* p = (const uint8_t*)packet;
@@ -14,7 +34,19 @@ static bool VerifyChecksum(const USBCtrlPacket* packet) {
     return (sum == packet->checksum);
 }
 
-// パケット解析の本体
+static uint16_t CalcChecksum(const void* packet, size_t size) {
+    uint16_t sum = 0;
+    const uint8_t* p = (const uint8_t*)packet;
+    // checksumは最後の2バイトにある前提
+    for (size_t i = 0; i < size - 2; i++) {
+        sum += p[i];
+    }
+    return sum;
+}
+
+// =========================================================
+// 4. パケット解析関数 (受信処理)
+// =========================================================
 void Parse_USB_Packet(const USBCtrlPacket* pkt) {
     // 1. ヘッダー確認
     if (pkt->header != 0xA5A5) return;
@@ -26,12 +58,14 @@ void Parse_USB_Packet(const USBCtrlPacket* pkt) {
     switch (pkt->command_id) {
 
         case CMD_DRIVE_ALL:
+            // 駆動モード(STATE_DRIVE)でない時にモーター値を更新しても良いか？
+            // -> 安全のため、更新自体はOKだが、app.cpp側で出力がカットされる設計なので
+            //    ここでは単純に代入するだけでOKです。
             for (int i = 0; i < 16; i++) {
                 if (pkt->payload.drive[i].mode != 3) {
                     motors[i].mode   = pkt->payload.drive[i].mode;
                     motors[i].target = pkt->payload.drive[i].target;
                 }
-
             }
             break;
 
@@ -59,12 +93,24 @@ void Parse_USB_Packet(const USBCtrlPacket* pkt) {
 
         case CMD_SEND_CAN:
             {
-                // ここでCAN送信関数を呼び出す場合は、
-                // main.h や CANライブラリを include してください
+                // main.h や can_handler.hpp で宣言されている hfdcan3 を使う
+                // （もし見えなければ extern FDCAN_HandleTypeDef hfdcan3; を追加）
+                extern FDCAN_HandleTypeDef hfdcan3;
+
+                // 新しく作った関数を呼ぶだけ！
+                // HALの複雑な設定は全部向こうでやってくれます
+                CAN_Transmit_Safe(
+                    &hfdcan3,
+                    pkt->payload.can_tx.can_id,
+                    (uint8_t*)pkt->payload.can_tx.data,
+                    pkt->payload.can_tx.dlc
+                );
             }
             break;
 
         case CMD_EMERGENCY_STOP:
+            // ここでの処理も重要ですが、app.cpp側で `is_pc_emergency_req` フラグを
+            // 立てて制御しているので、ここでは念のためのパラメータリセットを行います
             for (int i = 0; i < 16; i++) {
                 motors[i].mode = 3;
                 motors[i].target = 0;
@@ -73,42 +119,28 @@ void Parse_USB_Packet(const USBCtrlPacket* pkt) {
     }
 }
 
-// ---------------------------------------------------------
-// 内部関数: チェックサム計算 (作成用)
-// ---------------------------------------------------------
-// パケットの先頭から「checksumフィールドの直前」までのバイト和を計算します
-static uint16_t CalcChecksum(const void* packet, size_t size) {
-    uint16_t sum = 0;
-    const uint8_t* p = (const uint8_t*)packet;
-
-    // checksumは最後の2バイトにある前提なので、size - 2 までループ
-    for (size_t i = 0; i < size - 2; i++) {
-        sum += p[i];
-    }
-    return sum;
-}
-
-// ---------------------------------------------------------
-// 公開関数: モーターパケットの作成 (梱包)
-// ---------------------------------------------------------
+// =========================================================
+// 5. モーターパケット作成関数 (送信処理)
+// =========================================================
 void Prepare_Motor_Packet(USBFeedbackPacket* pkt) {
-    // 1. バッファを念のためゼロクリア (ゴミデータ混入防止)
-    //    必須ではありませんが、安全のため推奨
-    memset(pkt, 0, sizeof(USBFeedbackPacket));
+	memset(pkt, 0, sizeof(USBFeedbackPacket));
 
-    // 2. ヘッダー設定
-    pkt->header = 0x5A5A;
+	pkt->header = 0x5A5A;
+	pkt->system_state = (uint8_t)CurrentSystemState;
 
-    // 3. 16台分のデータを詰め込む
+	// ★現在の設定状況をPCへ通知
+	pkt->pid_configured_mask = pid_configured_mask;
+
+	pkt->reserved = 0;
+
+    // 4. 16台分のデータを詰め込む
     for (int i = 0; i < 16; i++) {
-        // グローバルの motors 配列から値を取得
-        pkt->motors[i].angle    = motors[i].total_angle;      // 累積角度
-        pkt->motors[i].velocity = motors[i].current_velocity; // 速度
-        pkt->motors[i].torque   = motors[i].torque_current_raw; // トルク電流
-        pkt->motors[i].temp     = motors[i].temperature;      // 温度
+        pkt->motors[i].angle    = motors[i].total_angle;
+        pkt->motors[i].velocity = motors[i].current_velocity;
+        pkt->motors[i].torque   = motors[i].torque_current_raw;
+        pkt->motors[i].temp     = motors[i].temperature;
     }
 
-    // 4. チェックサムを計算して封をする
-    //    構造体全体のサイズを渡して計算させ、最後のメンバに代入
+    // 5. チェックサム計算
     pkt->checksum = CalcChecksum(pkt, sizeof(USBFeedbackPacket));
 }

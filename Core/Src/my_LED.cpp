@@ -1,6 +1,12 @@
 #include "my_LED.hpp"
+#include "app.hpp"
+#include "robomas.hpp"
 
 static uint16_t keep_pattern = 0b0;
+
+extern RoboMaster motors[16];
+
+extern SystemState CurrentSystemState;
 
 void updateLEDs(uint16_t pattern) {
     for (int i = 0; i < 16; i++) {
@@ -58,4 +64,58 @@ void CAN2_LED(void){
 
 void CAN3_LED(void){
 	HAL_GPIO_TogglePin(CAN3_LED_GPIO_Port, CAN3_LED_Pin);
+}
+
+// ============================================================
+// LED制御関数 (10msごとに呼び出し)
+// ============================================================
+void Update_Mode_LEDs() {
+    uint16_t led_pattern = 0;
+    uint32_t now = HAL_GetTick();
+
+    // 1. 各モーターのステータスLED (シフトレジスタ)
+    for (int i = 0; i < 16; i++) {
+        // フィードバックが途絶えていたら消灯 (Dead)
+        if (now - motors[i].last_feedback_time > 200) continue;
+
+        switch (motors[i].mode) {
+            case 1: // 速度制御: 常時点灯
+                led_pattern |= (1 << i);
+                break;
+            case 2: // 位置制御: 1秒周期点滅
+                if ((now % 1000) < 500) led_pattern |= (1 << i);
+                break;
+            case 0: // 電流制御: 高速点滅
+                if ((now % 200) < 100) led_pattern |= (1 << i);
+                break;
+            case 3: // 無効: 心拍点滅 (生存確認)
+                if ((now % 2000) < 100) led_pattern |= (1 << i);
+                break;
+            default: break;
+        }
+    }
+    updateLEDs(led_pattern);
+
+    // 2. システム状態用 緑LED (Green_LED)
+    switch (CurrentSystemState) {
+        case STATE_EMERGENCY:
+            // 非常停止: 完全消灯
+            Green_LED(0);
+            break;
+
+        case STATE_DRIVE:
+            // 駆動中: 常時点灯
+            Green_LED(1);
+            break;
+
+        case STATE_READY:
+        default:
+            // 準備中: ゆったりとした心拍点滅 (2秒に1回ピカッ)
+            if ((now % 2000) < 100) {
+                Green_LED(1);
+            } else {
+                Green_LED(0);
+            }
+            break;
+    }
 }
